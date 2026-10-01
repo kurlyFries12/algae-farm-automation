@@ -1,0 +1,332 @@
+ORANGE (NØDSITUATION) - DETALJERET SEKVENS
+================================================================================
+
+UDLØSNING AF NØDSITUATION:
+  Temp < 28 °C ELLER > 37 °C
+  ELLER
+  pH < 8,5 ELLER > 11,5
+  ELLER
+  Sensor-fejl/invalid aflæsning
+  ELLER
+  Pumpe-fejl (flow mangler når det burde være der)
+
+────────────────────────────────────────────────────────────────────────────
+
+AUTOMATISK NØDSEKVENTERING (SAT I GANG STRAKS):
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   EMERGENCY SHUTDOWN SEQUENCE                           │
+│                        (Køres til completion)                           │
+└────────────────────┬────────────────────────────────────────────────────┘
+                     │
+        ┌────────────┴──────────────┐
+        │                            │
+        ▼                            ▼
+    ┌─────────┐              ┌─────────────┐
+    │ PUMPE   │              │ ORANGE LED  │
+    │ BAKUD   │              │ START BLINK │
+    │ AKTIVERE│              │ (250ms)     │
+    └────┬────┘              └─────────────┘
+         │
+         ▼
+    ┌──────────────────────────┐
+    │ Sæt PUMP_SPEED til HIGH  │
+    │ (maksimalt tilbage)      │
+    │ Retning = BAKUD (DIR=1)  │
+    │ PUL+ = høj frekv         │
+    └────┬─────────────────────┘
+         │
+         ▼
+    ┌──────────────────────────────────────┐
+    │ VENT OG MONITOR FLOW SENSOR          │
+    │ (Tæl pulser mens pumpe køres bakud)  │
+    └────┬───────────────────────────────┬──┘
+         │                               │
+         ▼                               ▼
+    ┌─────────────┐              ┌──────────────────┐
+    │ FLOW        │              │ FLOW SENSOR      │
+    │ DETECTED?   │              │ REGISTRERER      │
+    │ (HIGH)      │              │ PULSER           │
+    │             │              │ (Vand pumpes)    │
+    │ JA/NEJ      │              │                  │
+    └─────────────┘              └──────────────────┘
+         │
+         ├─ JA (Flow registreret)
+         │   │
+         │   ▼
+         │  ┌──────────────────────────────┐
+         │  │ FORTSÆT PUMPE BAKUD          │
+         │  │ Monitor flow kontinuerligt   │
+         │  │ (Hver 100ms check)           │
+         │  └────┬─────────────────────────┘
+         │       │
+         │       ▼
+         │  ┌────────────────────────────┐
+         │  │ FLOW SENSOR = 0            │
+         │  │ (Ingen pulser i 2 sek?)    │
+         │  │ = VAND TILBAGE I TANK      │
+         │  │                            │
+         │  │ JA → FLOW OPHØRT           │
+         │  └────┬───────────────────────┘
+         │       │
+         │       ▼
+         │  ┌──────────────────────────────┐
+         │  │ PUMPE STOP                   │
+         │  │ PUL+ = LOW                   │
+         │  │ DIR = NEUTRAL                │
+         │  └────┬─────────────────────────┘
+         │       │
+         └───────┴─ GOTO: MOTOR RESET SEKVENS
+         │
+         └─ NEJ (Ingen flow)
+             │
+             ▼
+            ┌────────────────────────────────────┐
+            │ KRITISK FEJL:                      │
+            │ PUMPE BAKUD MEN INGEN FLOW        │
+            │ = PUMPE ER DEFEKT ELLER BLOKERET  │
+            │                                    │
+            │ Mulige årsager:                    │
+            │ - Pumpe mekanisk fejl              │
+            │ - Slanger tilstoppet               │
+            │ - Ventil blokeret                  │
+            └────┬───────────────────────────────┘
+                 │
+                 ▼
+                ┌─────────────────────────────┐
+                │ PUMPE STOP EFTER 30 SEK     │
+                │ (Undgå motorbrand)          │
+                │                             │
+                │ ORANGE LED = FAST BLINK     │
+                │ LCD: "PUMP FAILURE"         │
+                │                             │
+                │ MANUAL INSPEKTION KRÆVET    │
+                │ - Check slanger             │
+                │ - Check ventiler            │
+                │ - Check pumpe mekanisme     │
+                └──────────────────┬──────────┘
+                                   │
+                                   ▼
+                        ┌─────────────────────┐
+                        │ Bruger må trykke    │
+                        │ START for at retry  │
+                        │ (eller åbne/lukke   │
+                        │ nødstop knap)       │
+                        └─────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════
+
+MOTOR RESET SEKVENS (når vand er tilbage i tank):
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                    MOTOR HOME/RESET SEQUENCE                           │
+│         (Alle motorer returnerer til startposition)                    │
+└─────────────────────┬──────────────────────────────────────────────────┘
+                      │
+            ┌─────────┴────────┐
+            │                  │
+            ▼                  ▼
+    ┌──────────────┐   ┌──────────────────┐
+    │ SOLAR MOTORS │   │ ALGE-FRAME MOTOR │
+    │ (SR1 + ST2)  │   │ (Motor 3)        │
+    └────┬─────────┘   └────┬─────────────┘
+         │                  │
+         ▼                  ▼
+    ┌─────────────────────────────────┐
+    │ RESET POSITION (HOME)           │
+    │                                 │
+    │ SR1 (Solar Rotation):           │
+    │   ROTATE TIL 0° (neutral)       │
+    │   (eller 180°, vekk fra sol)    │
+    │                                 │
+    │ ST2 (Solar Tilt):               │
+    │   TILT TIL 45° NEDOVER          │
+    │   (Sikker, parallel med sol)    │
+    │                                 │
+    │ Motor 3 (Alge-Frame Tilt):      │
+    │   TILT TIL 45° (FIXED POSITION) │
+    │   (Beskyttet position)          │
+    └────┬────────────────────────────┘
+         │
+         ▼
+    ┌──────────────────────────────────────┐
+    │ Kør hver motor til HOME uden kontrol │
+    │ fra fotoresistorer                   │
+    │                                      │
+    │ Brug STEP/PUL+ + DIR til manuelt     │
+    │ at drive hver motor tilbage          │
+    └────┬───────────────────────────────┬──┘
+         │                               │
+         ▼                               ▼
+    ┌──────────────────┐        ┌───────────────────┐
+    │ SR1 HOME:        │        │ ST2 HOME:         │
+    │                  │        │                   │
+    │ if (position != 0) {      │ if (tilt != 45) { │
+    │   DIR = CW/CCW   │        │   DIR = DOWN      │
+    │   PULS rapid     │        │   PULS rapid      │
+    │   until 0°       │        │   until 45°       │
+    │ }                │        │ }                 │
+    │                  │        │                   │
+    │ STOP             │        │ STOP              │
+    │ speed = 0        │        │ speed = 0         │
+    └──────────────────┘        └───────────────────┘
+         │                               │
+         └───────────┬───────────────────┘
+                     │
+                     ▼
+            ┌──────────────────────┐
+            │ Motor 3 HOME:        │
+            │                      │
+            │ if (tilt != 45) {    │
+            │   DIR = DOWN         │
+            │   PULS rapid         │
+            │   until 45°          │
+            │ }                    │
+            │                      │
+            │ STOP                 │
+            │ speed = 0            │
+            └────┬─────────────────┘
+                 │
+                 ▼
+         ┌───────────────────────┐
+         │ Alle 3 motorer nu:    │
+         │ - Tilbagesat til home │
+         │ - Sikker position     │
+         │ - Standset            │
+         └────┬──────────────────┘
+              │
+              ▼
+         ┌────────────────────────┐
+         │ ORANGE LED BLINKER     │
+         │ (fortsætter)           │
+         │                        │
+         │ LCD viser:             │
+         │ "EMERGENCY STOP"       │
+         │ "TEMP/pH OUT OF RANGE" │
+         │ eller                  │
+         │ "PUMP FAILURE"         │
+         │                        │
+         │ VENTER PÅ BRUGER       │
+         │ - Åbn/luk nødstop      │
+         │ eller                  │
+         │ - Tryk START igen      │
+         └────────────────────────┘
+
+
+════════════════════════════════════════════════════════════════════════════
+
+KODE-PSEUDO FÖR NÖDSEKVENTERING:
+
+```cpp
+void emergencyShutdown() {
+  // 1) START PUMPE BAKUD MED MAX HASTIGHED
+  pumpeStepper.setSpeed(PUMP_MAX_SPEED);  // Maksimalt
+  pumpeStepper.setDirection(BAKUD);        // DIR = HIGH (bakud)
+  
+  // 2) SÆT ORANGE LED TIL BLINK
+  emergencyLED_state = ORANGE_BLINK_250MS;
+  
+  // 3) MONITOR FLOW OG VENT PÅ AT DET STOPPER
+  unsigned long pumpStartTime = millis();
+  unsigned long lastFlowDetectedTime = millis();
+  bool flowStoppedDetected = false;
+  
+  while (!flowStoppedDetected) {
+    // Læs flow sensor kontinuerligt
+    if (flowSensor_hasPulse()) {
+      lastFlowDetectedTime = millis();  // Opdater sidste gang flow saes
+    }
+    
+    // Hvis ingen flow i 2 sekunder = vand er tilbage i tank
+    if (millis() - lastFlowDetectedTime > 2000) {
+      flowStoppedDetected = true;
+      break;
+    }
+    
+    // Sikkerhed: hvis pumpe køres i > 30 sekunder uden flow = fejl
+    if (millis() - pumpStartTime > 30000) {
+      LCD.print("PUMP FAILURE - CHECK HOSES");
+      pumpeStepper.stop();  // STOP pumpen
+      return;  // EXIT - kræver manuel indgreb
+    }
+    
+    pumpeStepper.runSpeed();  // Fortsæt pumpning
+    delay(100);
+  }
+  
+  // 4) PUMPE STOP (flow er stoppet = vand tilbage)
+  pumpeStepper.setSpeed(0);
+  pumpeStepper.stop();
+  
+  // 5) RESET ALLE MOTORER TIL HOME POSITION
+  resetMotorsToHome();
+  
+  // 6) HALT - VENT PÅ BRUGER ACTION
+  systemActive = false;
+  faultFlag = true;  // Hold orange LED blinkende
+}
+
+void resetMotorsToHome() {
+  // SOLAR ROTATION (SR1) - TIL 0°
+  while (solarRotationPosition != 0) {
+    solarXStepper.setSpeed(600);  // Hurtig return
+    solarXStepper.setDirection(calculateHomeDirection_SR1());
+    solarXStepper.runSpeed();
+  }
+  solarXStepper.stop();
+  
+  // SOLAR TILT (ST2) - TIL 45°
+  while (solarTiltPosition != 45) {
+    solarYStepper.setSpeed(600);
+    solarYStepper.setDirection(TILT_DOWN);
+    solarYStepper.runSpeed();
+  }
+  solarYStepper.stop();
+  
+  // ALGE FRAME TILT (Motor 3) - TIL 45°
+  while (algeTiltPosition != 45) {
+    algeStepper.setSpeed(600);
+    algeStepper.setDirection(TILT_DOWN);
+    algeStepper.runSpeed();
+  }
+  algeStepper.stop();
+  
+  // Alle motorer er nu i sikker HOME position
+}
+```
+
+════════════════════════════════════════════════════════════════════════════
+
+BRUGER-HANDLINGER EFTER NØDSITUATION:
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     RECOVERY OPTIONS                                    │
+└─────────┬───────────────────────────────────────────────────────────────┘
+          │
+    ┌─────┴──────────────────┐
+    │                         │
+    ▼                         ▼
+┌──────────────────┐   ┌────────────────────┐
+│ HVIS TEMP/pH     │   │ HVIS PUMP FEJL     │
+│ ER ÅRSAGEN       │   │                    │
+└────┬─────────────┘   └────┬───────────────┘
+     │                      │
+     ▼                      ▼
+┌─────────────────────────┐┌──────────────────────┐
+│ 1) Fix temp/pH:         ││ 1) Inspicer pumpe:   │
+│    - Afkøl vandet       ││    - Check slanger   │
+│    - Tilføj base/syre   ││    - Check ventiler  │
+│ 2) Vent 5 minutter      ││    - Check motor     │
+│ 3) Læs temp/pH igen     ││ 2) Reparér/udskift  │
+│ 4) Hvis OK → Tryk START ││ 3) Tryk START        │
+└─────────────────────────┘└──────────────────────┘
+     │                      │
+     ▼                      ▼
+┌─────────────────────────┐┌──────────────────────┐
+│ System genstartes       ││ System genstartes    │
+│ Motors går til HOME     ││ Motors går til HOME  │
+│ Pumpe klar til operation││ Pumpe kontrolleres   │
+│ Hvis temp/pH OK → RUN   ││ Hvis OK → RUN        │
+└─────────────────────────┘└──────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════
