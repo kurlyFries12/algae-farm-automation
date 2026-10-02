@@ -81,6 +81,10 @@
 #define ALGAE_SPEED      300.0
 #define PUMP_SPEED       450.0
 
+// Emergency deceleration (slow ramp down to prevent injury)
+#define EMERGENCY_DECEL_SPEED  50.0
+#define EMERGENCY_DECEL_TIME   3000   // 3 seconds to stop
+
 // ============================================================
 // TIMING INTERVALS
 // ============================================================
@@ -89,6 +93,7 @@
 #define DISPLAY_INTERVAL       1000
 #define FLOW_STOP_TIME         2000
 #define EMERGENCY_TIMEOUT      30000
+#define RETURN_PUMP_TIMEOUT    15000
 
 // ============================================================
 // GLOBAL STATE VARIABLES
@@ -100,7 +105,9 @@ bool systemRunning = false;
 bool dayDetected = false;
 bool actionRequired = false;
 bool criticalFault = false;
-bool emergencyMode = false;
+bool emergencyActive = false;
+bool emergencyReleased = false;
+bool returningWater = false;
 
 float currentPH = 0.0;
 float currentTemperature = 0.0;
@@ -108,6 +115,8 @@ float currentFlow = 0.0;
 
 unsigned long lastSensorRead = 0;
 unsigned long lastDisplayUpdate = 0;
+unsigned long emergencyStartTime = 0;
+unsigned long lastFlowCalculation = 0;
 
 int lightValue = 0;
 
@@ -244,8 +253,6 @@ void readFlow() {
   lastFlowCalculation = now;
 }
 
-unsigned long lastFlowCalculation = 0;
-
 void evaluateSystem() {
   actionRequired = false;
   criticalFault = false;
@@ -318,8 +325,10 @@ void updateDisplay() {
 
   lcd.setCursor(0, 3);
 
-  if (emergencyMode) {
-    lcd.print("EMERGENCY ACTIVE");
+  if (emergencyActive) {
+    lcd.print("EMERGENCY - STOP");
+  } else if (returningWater) {
+    lcd.print("RETURN WATER");
   } else if (criticalFault) {
     lcd.print("CRITICAL FAULT");
   } else if (actionRequired) {
@@ -339,18 +348,137 @@ void handleButtons() {
   startButton.update();
   emergencyStopButton.update();
 
-  // Emergency stop takes priority
-  if (emergencyStopButton.fell()) {
-    emergencyMode = true;
-    systemRunning = false;
-  }
-
-  // Start/Stop button only works if not in emergency mode
-  if (startButton.fell() && !emergencyMode) {
-    if (!criticalFault) {
-      systemRunning = !systemRunning;
+  // Emergency stop button (momentary)
+  // When pressed: activate emergency stop
+  // When released: allow recovery
+  if (emergencyStopButton.read() == LOW) {
+    // Emergency stop button is PRESSED
+    if (!emergencyActive) {
+      emergencyActive = true;
+      emergencyStartTime = millis();
+      emergencyReleased = false;
+    }
+  } else {
+    // Emergency stop button is RELEASED
+    if (emergencyActive) {
+      emergencyReleased = true;
+      // Give time to stop before allowing restart
     }
   }
+
+  // Start button (toggle switch - ON/OFF)
+  if (startButton.fell()) {
+    // Only toggle if no emergency is active
+    if (!emergencyActive) {
+      systemRunning = !systemRunning;
+      
+      // When system starts, begin water return sequence
+      if (systemRunning && emergencyReleased) {
+        returningWater = true;
+      }
+    }
+  }
+}
+
+// ============================================================
+// EMERGENCY STOP - SMOOTH DECELERATION
+// ============================================================
+
+void emergencyStopDecelerate() {
+  // Gradual speed reduction to prevent injury
+  unsigned long timeSinceEmergency = millis() - emergencyStartTime;
+  float decelerationFactor = 1.0f - (timeSinceEmergency / (float)EMERGENCY_DECEL_TIME);
+
+  if (decelerationFactor < 0.0f) {
+    decelerationFactor = 0.0f;
+  }
+
+  // Apply deceleration to all motors
+  solarRotation.setSpeed(EMERGENCY_DECEL_SPEED * decelerationFactor);
+  solarTilt.setSpeed(EMERGENCY_DECEL_SPEED * decelerationFactor);
+  algaeTilt.setSpeed(EMERGENCY_DECEL_SPEED * decelerationFactor);
+  pump.setSpeed(0);  // Pump stops immediately
+
+  solarRotation.runSpeed();
+  solarTilt.runSpeed();
+  algaeTilt.runSpeed();
+
+  // Display emergency info
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("EMERGENCY STOP");
+  lcd.setCursor(0, 1);
+  lcd.print("Slow shutdown...");
+  lcd.setCursor(0, 2);
+  lcd.print("Time: ");
+  lcd.print(timeSinceEmergency / 1000);
+  lcd.print("s");
+
+  // After deceleration time, full stop
+  if (timeSinceEmergency > EMERGENCY_DECEL_TIME) {
+    stopAllMotors();
+    disableDrivers();
+  }
+}
+
+// ============================================================
+// WATER RETURN SEQUENCE (after emergency released and restart)
+// ============================================================
+
+void returnWaterToTank() {
+  if (!returningWater) {
+    return;
+  }
+
+  enableDrivers();
+
+  // Pump algae back to tank
+  digitalWrite(PUMP_DIR, HIGH);  // Reverse direction
+  pump.setMaxSpeed(PUMP_SPEED);
+  pump.setSpeed(PUMP_SPEED);
+
+  unsigned long returnStart = millis();
+  unsigned long lastFlow = millis();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("RETURNING WATER");
+  lcd.setCursor(0, 1);
+  lcd.print("To tank...");
+
+  while (millis() - returnStart < RETURN_PUMP_TIMEOUT) {
+    pump.runSpeed();
+
+    noInterrupts();
+    unsigned long pulses = flowPulses;
+    flowPulses = 0;
+    interrupts();
+
+    if (pulses > 0) {
+      lastFlow = millis();
+    }
+
+    // No flow for 2 seconds = water is back
+    if (millis() - lastFlow >= FLOW_STOP_TIME) {
+      break;
+    }
+
+    delay(10);
+  }
+
+  // Stop pump when water is returned
+  pump.setSpeed(0);
+  pump.stop();
+
+  returningWater = false;
+  emergencyReleased = false;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Water returned");
+  lcd.setCursor(0, 1);
+  lcd.print("Ready to run");
+  delay(2000);
 }
 
 // ============================================================
@@ -394,94 +522,6 @@ void runPumpReverse() {
   pump.setMaxSpeed(PUMP_SPEED);
   pump.setSpeed(PUMP_SPEED);
   pump.runSpeed();
-}
-
-// ============================================================
-// EMERGENCY SHUTDOWN SEQUENCE
-// ============================================================
-
-void emergencyShutdown() {
-  if (emergencyMode == false) {
-    return;
-  }
-
-  systemRunning = false;
-  criticalFault = true;
-
-  enableDrivers();
-
-  // 1. Pump algae back to tank
-  digitalWrite(PUMP_DIR, HIGH);
-  pump.setMaxSpeed(PUMP_SPEED);
-  pump.setSpeed(PUMP_SPEED);
-
-  unsigned long emergencyStart = millis();
-  unsigned long lastFlow = millis();
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("EMERGENCY SHUTDOWN");
-  lcd.setCursor(0, 1);
-  lcd.print("Returning algae...");
-
-  while (millis() - emergencyStart < EMERGENCY_TIMEOUT) {
-    pump.runSpeed();
-
-    noInterrupts();
-    unsigned long pulses = flowPulses;
-    flowPulses = 0;
-    interrupts();
-
-    if (pulses > 0) {
-      lastFlow = millis();
-    }
-
-    // No flow for 2 seconds means water is back in tank
-    if (millis() - lastFlow >= FLOW_STOP_TIME) {
-      break;
-    }
-
-    delay(10);
-  }
-
-  // 2. Stop pump
-  pump.setSpeed(0);
-  pump.stop();
-
-  // 3. Return motors to safe position
-  solarRotation.setMaxSpeed(SOLAR_SPEED);
-  solarTilt.setMaxSpeed(SOLAR_SPEED);
-  algaeTilt.setMaxSpeed(ALGAE_SPEED);
-
-  solarRotation.moveTo(2500);
-  solarTilt.moveTo(2500);
-  algaeTilt.moveTo(2500);
-
-  lcd.setCursor(0, 2);
-  lcd.print("Moving to safe pos...");
-
-  while (solarRotation.distanceToGo() != 0 ||
-         solarTilt.distanceToGo() != 0 ||
-         algaeTilt.distanceToGo() != 0) {
-    solarRotation.run();
-    solarTilt.run();
-    algaeTilt.run();
-  }
-
-  // 4. Disable drivers
-  stopAllMotors();
-  disableDrivers();
-
-  // 5. Display emergency status
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("EMERGENCY STOP");
-  lcd.setCursor(0, 1);
-  lcd.print("All motors halted");
-  lcd.setCursor(0, 2);
-  lcd.print("Manual reset needed");
-  lcd.setCursor(0, 3);
-  lcd.print("Contact supervisor");
 }
 
 // ============================================================
@@ -569,18 +609,26 @@ void loop() {
     updateDisplay();
   }
 
-  // Emergency stop activated
-  if (emergencyMode) {
-    emergencyShutdown();
+  // Emergency stop active - slow deceleration
+  if (emergencyActive) {
+    emergencyStopDecelerate();
+    return;
   }
 
-  // Critical fault triggers emergency
-  if (criticalFault && !emergencyMode) {
-    emergencyMode = true;
+  // Water return sequence (after emergency released and restart)
+  if (returningWater) {
+    returnWaterToTank();
+    return;
+  }
+
+  // Critical fault triggers emergency (but slower deceleration, not instant)
+  if (criticalFault && !emergencyActive) {
+    emergencyActive = true;
+    emergencyStartTime = millis();
   }
 
   // Normal operation
-  if (systemRunning && !criticalFault && !emergencyMode) {
+  if (systemRunning && !criticalFault && !emergencyActive && !returningWater) {
     enableDrivers();
     runSolarMotors();
     runAlgaeFrame();
@@ -592,7 +640,7 @@ void loop() {
     }
   } else {
     stopAllMotors();
-    if (!emergencyMode) {
+    if (!emergencyActive) {
       disableDrivers();
     }
   }
